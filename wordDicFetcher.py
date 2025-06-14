@@ -1,36 +1,72 @@
+import os
+import json
 import random
 import requests
+import textwrap
+import re
 from bs4 import BeautifulSoup
+from tabulate import tabulate
+from colorama import Fore, Style, init
 
-# Function to fetch definitions using web scraping
-def fetch_definitions(word):
+# Initialize color output
+init(autoreset=True)
+
+# Constants
+CACHE_FILE = 'definitions_cache.json'
+WORDS_FILE = '2000words.py'
+MAX_DEF_LENGTH = 180
+WRAP_WIDTH = 70
+
+# Load cached definitions from file
+def load_cache():
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, 'r') as file:
+            return json.load(file)
+    return {}
+
+# Save definitions cache to file
+def save_cache(cache):
+    with open(CACHE_FILE, 'w') as file:
+        json.dump(cache, file, indent=2)
+
+# Clean and format the raw definition
+def format_definition(text):
+    text = re.sub(r'([a-z])([A-Z])', r'\1 \2', text)        # fix stuck words
+    text = re.sub(r'\s+', ' ', text).strip()                # normalize whitespace
+    if len(text) > MAX_DEF_LENGTH:
+        text = text[:MAX_DEF_LENGTH].rsplit(' ', 1)[0] + "..."
+    return "\n".join(textwrap.wrap(text, width=WRAP_WIDTH))
+
+# Scrape definition from Merriam-Webster
+def fetch_definitions(word, cache):
+    if word in cache:
+        return cache[word]
+
     try:
         url = f"https://www.merriam-webster.com/dictionary/{word}"
         response = requests.get(url)
+        response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
 
-        # Find the definition
-        definition_tag = soup.find('span', class_='dtText')
-        if definition_tag:
-            definition = definition_tag.text.strip()
-            return definition
-        else:
-            return "Definition not found."
+        definition_tags = soup.find_all('span', class_='dtText')
+        definitions = [tag.get_text(strip=True).lstrip(":") for tag in definition_tags[:3]]
+        raw_definition = "; ".join(definitions) if definitions else "Definition not found."
+
+        cleaned_definition = format_definition(raw_definition)
+        cache[word] = cleaned_definition
+        return cleaned_definition
 
     except requests.RequestException as e:
-        print(f"Error fetching definition for '{word}': {e}")
-        return None
+        return f"Request error: {e}"
     except Exception as e:
-        print(f"An error occurred while fetching definition for '{word}': {e}")
-        return None
+        return f"Parsing error: {e}"
 
-# Function to read the file and categorize the words
+# Read words from file and build table
 def read_and_categorize_file(filename):
     try:
         with open(filename, 'r') as file:
             lines = file.readlines()
-            
-            # Extracting columns from each line
+
             words_data = []
             for line in lines:
                 columns = line.strip().split()
@@ -39,38 +75,46 @@ def read_and_categorize_file(filename):
                     usage_frequency = int(columns[1])
                     word = ' '.join(columns[2:])
                     words_data.append((word_number, usage_frequency, word))
-            
-            # Sort the words by usage frequency in descending order
+
+            # Sort by frequency
             words_data.sort(key=lambda x: x[1], reverse=True)
-            
-            # Prompt the user to fetch definitions interactively
-            print("Welcome to the Word Definition Fetcher!")
-            print("You can fetch definitions for 10 randomly selected words from the file.")
-            input("Press Enter to continue...")
 
-            # Select 10 words randomly from the sorted list
-            selected_words = random.sample(words_data, min(len(words_data), 10))
-            
-            # Print table header
-            print("\nFetching definitions for selected words:")
-            print(f"{'Word Number':<12} {'Usage Frequency':<15} {'Word':<15} {'Definition':<60}")
-            print("-" * 90)
-            
-            # Fetch and print definitions for each selected word
-            for word_data in selected_words:
-                word_number, usage_frequency, word = word_data
-                definition = fetch_definitions(word)
-                print(f"{word_number:<12} {usage_frequency:<15} {word:<15} {definition:<60}")
-                
+            # Randomly select 10
+            selected_words = random.sample(words_data, min(10, len(words_data)))
+
+            print(Fore.CYAN + "\n=== Word Definition Fetcher ===")
+            print(Fore.YELLOW + f"Processing file: {filename}\n")
+
+            cache = load_cache()
+            table_data = []
+
+            for i, (word_number, usage_frequency, word) in enumerate(selected_words, start=1):
+                print(Fore.GREEN + f"{i}. Fetching: {word}...", end=' ')
+                definition = fetch_definitions(word, cache)
+                print("Done.")
+                table_data.append([
+                    word_number,
+                    usage_frequency,
+                    word,
+                    definition
+                ])
+
+            save_cache(cache)
+
+            # Print final table
+            print("\n" + tabulate(
+                table_data,
+                headers=["Word Number", "Usage Frequency", "Word", "Definition"],
+                tablefmt="grid"
+            ))
+
     except FileNotFoundError:
-        print("Error: File not found. Please check the filename and try again.")
+        print(Fore.RED + "Error: File not found.")
     except ValueError as ve:
-        print(f"Error: {ve}")
+        print(Fore.RED + f"Value error: {ve}")
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        print(Fore.RED + f"Unexpected error: {e}")
 
-# File name
-filename = '2000words.py'
-
-# Reading and categorizing the file
-read_and_categorize_file(filename)
+# Entry point
+if __name__ == '__main__':
+    read_and_categorize_file(WORDS_FILE)
